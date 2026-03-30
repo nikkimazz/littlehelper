@@ -112,11 +112,87 @@ class DataIngestionPipeline:
             df = pd.read_csv(filepath, encoding=encoding)
             print(f"✓ Loaded {len(df)} records from {filepath}")
             print(f"  Columns: {', '.join(df.columns.tolist())}")
+            # Apply schema mapping for messy spreadsheets
+            df = self.schema_mapping_agent(df)
             return df
         except Exception as e:
             print(f"Error loading CSV: {e}")
             # Generate synthetic data if file not found
             return self.generate_synthetic_data()
+    
+    def schema_mapping_agent(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Use AI-like logic to map messy column names to expected MissionRequirements fields"""
+        import difflib
+        
+        # Expected fields and their possible variations
+        field_mappings = {
+            'mission_id': ['mission_id', 'id', 'mission', 'name', 'mission_name', 'project_id'],
+            'mission_type': ['mission_type', 'type', 'mission', 'category', 'orbit_type'],
+            'duration_months': ['duration_months', 'duration', 'months', 'time', 'period', 'length'],
+            'payload_mass_kg': ['payload_mass_kg', 'payload', 'mass', 'weight', 'kg', 'payload_mass'],
+            'launch_date': ['launch_date', 'date', 'launch', 'start_date', 'begin_date'],
+            'technology_readiness_level': ['trl', 'technology_readiness_level', 'readiness', 'tech_level', 'maturity'],
+            'crew_size': ['crew_size', 'crew', 'people', 'personnel', 'astronauts'],
+            'science_objectives': ['science_objectives', 'objectives', 'goals', 'science', 'missions'],
+            'constraints': ['constraints', 'limits', 'requirements', 'restrictions']
+        }
+        
+        column_mapping = {}
+        used_columns = set()
+        
+        for expected_field, keywords in field_mappings.items():
+            best_match = None
+            best_score = 0
+            
+            for col in df.columns:
+                if col in used_columns:
+                    continue
+                col_lower = col.lower().replace('_', ' ').replace('-', ' ')
+                
+                # Check for exact matches first
+                if expected_field.lower() in col_lower:
+                    best_match = col
+                    best_score = 1.0
+                    break
+                
+                # Check keyword matches
+                for keyword in keywords:
+                    if keyword in col_lower:
+                        score = len(keyword) / len(col_lower)  # Simple score
+                        if score > best_score:
+                            best_score = score
+                            best_match = col
+                            break
+                
+                # Use difflib for fuzzy matching
+                if not best_match:
+                    ratios = [difflib.SequenceMatcher(None, expected_field.lower(), col_lower).ratio()]
+                    max_ratio = max(ratios)
+                    if max_ratio > 0.6 and max_ratio > best_score:
+                        best_score = max_ratio
+                        best_match = col
+            
+            if best_match:
+                column_mapping[expected_field] = best_match
+                used_columns.add(best_match)
+                print(f"✓ Mapped '{best_match}' -> '{expected_field}'")
+            else:
+                print(f"⚠ No mapping found for '{expected_field}', will use default")
+        
+        # Rename columns
+        df_renamed = df.rename(columns=column_mapping)
+        
+        # Ensure all expected columns exist, add defaults if missing
+        for field in field_mappings.keys():
+            if field not in df_renamed.columns:
+                if field in ['science_objectives', 'constraints']:
+                    df_renamed[field] = '[]' if field == 'science_objectives' else '{}'
+                elif field == 'launch_date':
+                    df_renamed[field] = datetime.now()
+                else:
+                    df_renamed[field] = None
+        
+        return df_renamed
     
     def generate_synthetic_data(self, n_samples: int = 1000) -> pd.DataFrame:
         """Generate synthetic mission data for demonstration"""
@@ -638,18 +714,21 @@ class VisualizationEngine:
         return fig
     
     def save_all_figures(self, dashboard: Dict[str, go.Figure], output_dir: str = "./outputs"):
-        """Save all figures to files"""
+        """Save all figures to high-resolution PNG files for presentations"""
         import os
         os.makedirs(output_dir, exist_ok=True)
         
         for name, fig in dashboard.items():
-            # Save as HTML
-            fig.write_html(f"{output_dir}/{name}.html")
-            # Save as PNG (requires kaleido)
+            # Save as high-resolution PNG
             try:
-                fig.write_image(f"{output_dir}/{name}.png")
-            except:
-                pass
+                fig.write_image(f"{output_dir}/{name}.png", width=1920, height=1080, scale=2)
+                print(f"✓ Saved {name}.png (1920x1080, 2x scale)")
+            except ImportError:
+                print(f"⚠ Install kaleido for PNG export: pip install kaleido")
+                # Fallback to HTML
+                fig.write_html(f"{output_dir}/{name}.html")
+            except Exception as e:
+                print(f"Error saving {name}: {e}")
         
         print(f"✓ Saved {len(dashboard)} visualizations to {output_dir}/")
 
@@ -924,7 +1003,7 @@ def run_enhanced_analysis(csv_path: str = None, mission: MissionRequirements = N
     if csv_path:
         dist_fig = orchestrator.load_and_train(csv_path)
         if dist_fig:
-            plotly.offline.plot(dist_fig, filename="distributions.html", auto_open=True)
+            print("Distributions learned from data")
     else:
         # Use synthetic data
         print("No CSV provided, generating synthetic training data...")
@@ -947,12 +1026,7 @@ def run_enhanced_analysis(csv_path: str = None, mission: MissionRequirements = N
     # Process mission with visualization
     results, dashboard = orchestrator.process_mission_with_visualization(mission)
     
-    # Display all visualizations
-    for name, fig in dashboard.items():
-        print(f"\nShowing: {name}")
-        plotly.offline.plot(fig, filename=f"{name}.html", auto_open=True)
-    
-    # Save visualizations
+    # Save visualizations as high-resolution PNGs
     orchestrator.viz_engine.save_all_figures(dashboard)
     
     return results, dashboard
